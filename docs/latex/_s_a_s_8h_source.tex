@@ -1,0 +1,27 @@
+\doxysection{SAS.\+h}
+\hypertarget{_s_a_s_8h_source}{}\label{_s_a_s_8h_source}\index{C:/Users/Owner/Documents/Root Beer Buggy/Code/buggy\_rear\_steer/src/SAS.h@{C:/Users/Owner/Documents/Root Beer Buggy/Code/buggy\_rear\_steer/src/SAS.h}}
+\mbox{\hyperlink{_s_a_s_8h}{Go to the documentation of this file.}}
+\begin{DoxyCode}{0}
+\DoxyCodeLine{00001\ }
+\DoxyCodeLine{00011\ \textcolor{preprocessor}{\#ifndef\ SAS\_H}}
+\DoxyCodeLine{00012\ \textcolor{preprocessor}{\#define\ SAS\_H}}
+\DoxyCodeLine{00013\ }
+\DoxyCodeLine{00014\ \textcolor{keyword}{class\ }\mbox{\hyperlink{class_s_a_s}{SAS}}\ \{}
+\DoxyCodeLine{00015\ }
+\DoxyCodeLine{00016\ \ \ \ \ \textcolor{keyword}{private}:}
+\DoxyCodeLine{00017\ \ \ \ \ \ \ \ \ \textcolor{keywordtype}{int}\ topMin,topMax,bottomMin,bottomMax;\ \textcolor{comment}{//far\ extremes(left\&right)\ for\ both\ poteniometers}}
+\DoxyCodeLine{00018\ \ \ \ \ \ \ \ \ \textcolor{keywordtype}{bool}\ calibratedLeft,calibratedRight;}
+\DoxyCodeLine{00019\ \ \ \ \ \ \ \ \ \textcolor{keywordtype}{int}\ pinA,pinB;}
+\DoxyCodeLine{00020\ \ \ \ \ \ \ \ \ }
+\DoxyCodeLine{00021\ \ \ \ \ \textcolor{keyword}{public}:}
+\DoxyCodeLine{00022\ \ \ \ \ \ \ \ \ \mbox{\hyperlink{class_s_a_s}{SAS}}(\textcolor{keywordtype}{int}\ pinA,\textcolor{keywordtype}{int}\ pinB);}
+\DoxyCodeLine{00023\ \ \ \ \ \ \ \ \ \textcolor{keywordtype}{void}\ setLeft();}
+\DoxyCodeLine{00024\ \ \ \ \ \ \ \ \ \textcolor{keywordtype}{void}\ setRight();}
+\DoxyCodeLine{00025\ \ \ \ \ \ \ \ \ \textcolor{keywordtype}{bool}\ error();}
+\DoxyCodeLine{00026\ \ \ \ \ \ \ \ \ \textcolor{keywordtype}{int}\ positionNonredundant();}
+\DoxyCodeLine{00027\ }
+\DoxyCodeLine{00028\ \};}
+\DoxyCodeLine{00029\ }
+\DoxyCodeLine{00030\ \textcolor{preprocessor}{\#endif}}
+
+\end{DoxyCode}
