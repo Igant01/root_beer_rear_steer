@@ -39,11 +39,14 @@ void motor_driver::set(int input){
     if(ENABLE){
       if(input<=mid){
         int x = map(input,mid,inMin,0,255);
+        analogWrite(DirB, 0);      // ensure opposite leg is off
         analogWrite(DirA,x);
       }
       else{
         int x = map(input,mid,inMax,0,255);
+        analogWrite(DirA, 0);      // ensure opposite leg is off
         analogWrite(DirB,x);
       }
     }
 }
+

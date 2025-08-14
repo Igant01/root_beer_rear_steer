@@ -50,7 +50,7 @@ bool SAS::error(){
     return false;
 }
 
-int SAS::positionNonredundant(){
+int SAS::positionNonRedundant(){
     int outMin = 0; //output minimum value
     int outMax = 1023;  //output maximum value
     if(calibratedLeft&&calibratedRight&&(!error())){

@@ -23,7 +23,7 @@ class SAS {
         void setLeft();
         void setRight();
         bool error();
-        int positionNonredundant();
+        int positionNonRedundant();
 
 };
 
