@@ -17,6 +17,7 @@
 #include <SAS.h>
 #include <PID_v1.h>
 #include <EEPROM.h>
+#include "PID_params.h"
 
 #define SASRB 18  //rear steering angle b
 #define SASRA 17  //rear steering angle a
@@ -37,10 +38,12 @@ SAS rearSAS(SASRA, SASRB, 16);
 // Task intervals (milliseconds)
 const unsigned long interval1 = 1;   // 1000Hz
 const unsigned long interval2 = 2;   // 500Hz
+const unsigned long interval3 = 5;   // 200Hz
 
 // Time trackers
 unsigned long prevTime1 = 0;
 unsigned long prevTime2 = 0;
+unsigned long prevTime3 = 0;
 
 //master control enable
 bool runFlag = true;
@@ -56,15 +59,42 @@ const float currentThreshold = 500.0; // mA - adjust based on your motor
 const int calibrationMotorSpeedLeft = 100;  // 0-512 (left side)
 const int calibrationMotorSpeedRight = 900; // 512-1023 (right side)
 
+// PID Loop data for plotting (target vs actual)
+struct LoopData {
+    double target;
+    double actual;
+    double error;
+    unsigned long timestamp;
+};
+
+// Circular buffers for loop data (100 samples each)
+#define LOOP_DATA_BUFFER_SIZE 100
+LoopData torqueLoopData[LOOP_DATA_BUFFER_SIZE];
+int torqueLoopIndex = 0;
+LoopData velocityLoopData[LOOP_DATA_BUFFER_SIZE];
+int velocityLoopIndex = 0;
+LoopData positionLoopData[LOOP_DATA_BUFFER_SIZE];
+int positionLoopIndex = 0;
+
+// Flags to enable data streaming for plots
+bool streamTorqueData = false;
+bool streamVelocityData = false;
+bool streamPositionData = false;
+unsigned long streamStartMicros = 0;  // Time reference for streaming (resets on start)
+
 
 void loop1();
 void loop2();
+void loop3();
 void usbConnectedFunction();
 bool calibrateRearSAS();
 void sweepAndLogSAS();
 
 void setup() {
   Serial.begin(115200);
+  
+  // Load PID parameters from EEPROM
+  PIDManager::loadAllPID();
   
   // Validate EEPROM calibration flags - if not exactly 1, clear to 0 (mark as invalid)
   byte rearFlag = EEPROM.read(4);
@@ -87,15 +117,21 @@ void loop() {
   unsigned long currentMillis = millis();
 
   // Task 1
-  if (currentMillis - prevTime1 >= interval1 && runFlag) {
+  if (currentMillis - prevTime1 >= interval1 && (runFlag || streamTorqueData)) {
     prevTime1 = currentMillis;
     loop1();
   }
 
   // Task 2 
-  if (currentMillis - prevTime2 >= interval2 && runFlag) {
+  if (currentMillis - prevTime2 >= interval2 && (runFlag || streamVelocityData)) {
     prevTime2 = currentMillis;
     loop2();
+  }
+
+  // Task 3 
+  if (currentMillis - prevTime3 >= interval3 && (runFlag || streamPositionData)) {
+    prevTime3 = currentMillis;
+    loop3();
   }
 
   // Handle USB connection state changes
@@ -118,12 +154,67 @@ void loop() {
   }
 }
 
-void loop1() {  // High speed (inner velocity loop)
- 
+void loop1() {  // High speed (torque control loop, safety monitoring)
+  // TODO: Implement torque control using motor current feedback
+  static double torqueTarget = 0.0;
+  static double torqueActual = 0.0;
+  
+  // Update loop control calculations here
+  // torqueTarget = desired torque setpoint
+  // torqueActual = measured torque from current sensor feedback
+  
+  // Stream data if enabled
+  if (streamTorqueData) {
+    unsigned long now = micros() - streamStartMicros;
+    Serial.print("TC,");
+    Serial.print(torqueTarget, 3);
+    Serial.print(",");
+    Serial.print(torqueActual, 3);
+    Serial.print(",");
+    Serial.println(now / 1000.0, 3);  // Convert micros to ms
+  }
 }
 
-void loop2() {  // Low speed (outer position loop)
- 
+void loop2() {  // Low speed (velocity control loop, data logging)
+  // TODO: Implement velocity control using motor speed feedback
+  static double velocityTarget = 0.0;
+  static double velocityActual = 0.0;
+  
+  // Update loop control calculations here
+  // velocityTarget = desired velocity setpoint
+  // velocityActual = measured velocity from encoder/sensor feedback
+  
+  // Stream data if enabled
+  if (streamVelocityData) {
+    unsigned long now = micros() - streamStartMicros;
+    Serial.print("VC,");
+    Serial.print(velocityTarget, 3);
+    Serial.print(",");
+    Serial.print(velocityActual, 3);
+    Serial.print(",");
+    Serial.println(now / 1000.0, 3);  // Convert micros to ms
+  }
+}
+
+void loop3() {  // Very low speed (steering/position control loop, data logging)
+  // TODO: Implement steering position control using steering angle feedback
+  static double steeringTarget = 0.0;
+  static double steeringActual = 0.0;
+  
+  // Update loop control calculations here
+  // steeringTarget = desired steering angle setpoint
+  // steeringActual = measured steering angle from SAS sensor feedback
+  
+  // Stream data if enabled
+  if (streamPositionData) {
+    unsigned long now = micros() - streamStartMicros;
+    Serial.print("LP,");
+    Serial.print(steeringTarget, 3);
+    Serial.print(",");
+    Serial.print(steeringActual, 3);
+    Serial.print(",");
+    Serial.println(now / 1000.0, 3);  // Convert micros to ms
+  }
 }
 
 bool calibrateRearSAS() {
@@ -445,6 +536,131 @@ void usbConnectedFunction() {
         Serial.print(frontSAS.getRightLimit());
         Serial.print(",frontMatch:");
         Serial.println(frontSAS.matchesEEPROM() ? "1" : "0");
+        break;
+      
+      // PID Parameter Commands
+      // IC = Get current torque PID params
+      // IV = Get current velocity PID params  
+      // IP = Get current position PID params
+      case 'I':
+        if (command.length() > 1) {
+          char subcmd = command.charAt(1);
+          if (subcmd == 'C') { // IC - Get torque PID
+            Serial.print("IC,");
+            Serial.print(PIDManager::torquePID.Kp, 6);
+            Serial.print(",");
+            Serial.print(PIDManager::torquePID.Ki, 6);
+            Serial.print(",");
+            Serial.println(PIDManager::torquePID.Kd, 6);
+          } else if (subcmd == 'V') { // IV - Get velocity PID
+            Serial.print("IV,");
+            Serial.print(PIDManager::velocityPID.Kp, 6);
+            Serial.print(",");
+            Serial.print(PIDManager::velocityPID.Ki, 6);
+            Serial.print(",");
+            Serial.println(PIDManager::velocityPID.Kd, 6);
+          } else if (subcmd == 'P') { // IP - Get position PID
+            Serial.print("IP,");
+            Serial.print(PIDManager::positionPID.Kp, 6);
+            Serial.print(",");
+            Serial.print(PIDManager::positionPID.Ki, 6);
+            Serial.print(",");
+            Serial.println(PIDManager::positionPID.Kd, 6);
+          } else if (subcmd == 'A') { // IA - Get all PID params
+            Serial.print("IAT,");
+            Serial.print(PIDManager::torquePID.Kp, 6);
+            Serial.print(",");
+            Serial.print(PIDManager::torquePID.Ki, 6);
+            Serial.print(",");
+            Serial.println(PIDManager::torquePID.Kd, 6);
+            Serial.print("IAV,");
+            Serial.print(PIDManager::velocityPID.Kp, 6);
+            Serial.print(",");
+            Serial.print(PIDManager::velocityPID.Ki, 6);
+            Serial.print(",");
+            Serial.println(PIDManager::velocityPID.Kd, 6);
+            Serial.print("IAP,");
+            Serial.print(PIDManager::positionPID.Kp, 6);
+            Serial.print(",");
+            Serial.print(PIDManager::positionPID.Ki, 6);
+            Serial.print(",");
+            Serial.println(PIDManager::positionPID.Kd, 6);
+          }
+        }
+        break;
+      
+      // Set PID Parameters
+      // HC<kp,ki,kd> = Set torque PID
+      // HV<kp,ki,kd> = Set velocity PID
+      // HP<kp,ki,kd> = Set position PID
+      case 'H':
+        if (command.length() > 1) {
+          char subcmd = command.charAt(1);
+          // Parse format: H[C/V/P]<kp,ki,kd>
+          String params = command.substring(2);
+          int comma1 = params.indexOf(',');
+          int comma2 = params.lastIndexOf(',');
+          
+          if (comma1 > 0 && comma2 > comma1) {
+            double kp = atof(params.substring(0, comma1).c_str());
+            double ki = atof(params.substring(comma1 + 1, comma2).c_str());
+            double kd = atof(params.substring(comma2 + 1).c_str());
+            
+            if (subcmd == 'C') { // HC - Set torque PID
+              PIDManager::setTorquePID(kp, ki, kd);
+              Serial.println("HC,OK");
+            } else if (subcmd == 'V') { // HV - Set velocity PID
+              PIDManager::setVelocityPID(kp, ki, kd);
+              Serial.println("HV,OK");
+            } else if (subcmd == 'P') { // HP - Set position PID
+              PIDManager::setPositionPID(kp, ki, kd);
+              Serial.println("HP,OK");
+            }
+          } else {
+            Serial.println("ERR,InvalidFormat");
+          }
+        }
+        break;
+      
+      // Data Streaming for plotting
+      // DC = Toggle torque loop data streaming
+      // DV = Toggle velocity loop data streaming
+      // DP = Toggle position loop data streaming
+      case 'U': // User data stream
+        if (command.length() > 1) {
+          char subcmd = command.charAt(1);
+          if (subcmd == 'C') { // UC - Toggle torque data streaming
+            streamTorqueData = !streamTorqueData;
+            if (streamTorqueData) streamStartMicros = micros();  // Reset time on start
+            Serial.print("UC,");
+            Serial.println(streamTorqueData ? "ON" : "OFF");
+          } else if (subcmd == 'V') { // UV - Toggle velocity data streaming
+            streamVelocityData = !streamVelocityData;
+            Serial.print("UV,");
+            Serial.println(streamVelocityData ? "ON" : "OFF");
+          } else if (subcmd == 'P') { // UP - Toggle position data streaming
+            streamPositionData = !streamPositionData;
+            Serial.print("UP,");
+            Serial.println(streamPositionData ? "ON" : "OFF");
+          } else if (subcmd == 'S') { // US - Stop all streaming immediately
+            streamTorqueData = false;
+            streamVelocityData = false;
+            streamPositionData = false;
+            Serial.println("US,OK");
+          }
+        }
+        break;
+      
+      // WPID = Write PID to EEPROM
+      case 'X':
+        if (command.length() > 1 && command.substring(1) == "PID") {
+          if (allowEEPROMWrite) {
+            PIDManager::saveAllPID();
+            Serial.println("XPID,OK");
+          } else {
+            Serial.println("XPID,LOCKED");
+          }
+        }
         break;
       
       default:

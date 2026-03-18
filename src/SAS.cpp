@@ -101,23 +101,18 @@ void SAS::clearFault(){
 int SAS::getPosition(){
     const int MIN_VAL = 10;
     const int MAX_VAL = 1013;
-
     const int BASE_TOLERANCE = 40;
     const int MAX_RATE = 80;
-
     const int MISMATCH_LIMIT = 10;
     const int STUCK_LIMIT = 200;
-
     const int DRIFT_WARNING = 25;
-
     const int DEAD_BAND = 2;
 
     // ---------- FILTERED ADC READ ----------
     long sum1 = 0;
     long sum2 = 0;
 
-    for (int i = 0; i < 5; i++)
-    {
+    for(int i = 0; i < 5; i++){
         sum1 += analogRead(pinA);
         sum2 += analogRead(pinB);
     }
@@ -131,30 +126,26 @@ int SAS::getPosition(){
     int newPos = lastPosition;
 
     // ---------- RANGE CHECK ----------
-    if (!pot1Valid && !pot2Valid)
-    {
+    if(!pot1Valid && !pot2Valid){
         faultActive = true;
         faultType = SENSOR_FAILURE;
         return lastPosition;
     }
 
-    if (!pot1Valid)
-    {
+    if(!pot1Valid){
         faultActive = true;
         faultType = POT1_RANGE_FAULT;
         degradedMode = true;
     }
 
-    if (!pot2Valid)
-    {
+    if(!pot2Valid){
         faultActive = true;
         faultType = POT2_RANGE_FAULT;
         degradedMode = true;
     }
 
     // ---------- AUTO CALIBRATION ----------
-    if (!calibrated && pot1Valid && pot2Valid)
-    {
+    if(!calibrated && pot1Valid && pot2Valid){
         offset = pot1 - pot2;
         calibrated = true;
     }
@@ -162,91 +153,65 @@ int SAS::getPosition(){
     int pot2Corrected = pot2 + offset;
 
     // ---------- CORRELATION CHECK ----------
-    if (pot1Valid && pot2Valid)
-    {
+    if(pot1Valid && pot2Valid){
         int diff = abs(pot1 - pot2Corrected);
-
         int positionEstimate = (pot1 + pot2Corrected) / 2;
-
         int dynamicTolerance = BASE_TOLERANCE + (positionEstimate / 50);
-
-        if (diff <= dynamicTolerance)
-        {
+        if(diff <= dynamicTolerance){
             mismatchCounter = 0;
             newPos = positionEstimate;
-
             driftAccumulator1 += diff;
             driftAccumulator2 += diff;
             driftSamples++;
-
-            if (driftSamples > 1000)
-            {
+            if(driftSamples > 1000){
                 int avgDrift = (driftAccumulator1 + driftAccumulator2) / (2 * driftSamples);
-
-                if (avgDrift > DRIFT_WARNING && !faultActive)
-                {
+                if(avgDrift > DRIFT_WARNING && !faultActive){
                     faultActive = true;
                     faultType = CORRELATION_FAULT;
                 }
-
                 driftAccumulator1 = 0;
                 driftAccumulator2 = 0;
                 driftSamples = 0;
             }
         }
-        else
-        {
+        else{
             mismatchCounter++;
-
-            if (mismatchCounter > MISMATCH_LIMIT && !faultActive)
-            {
+            if(mismatchCounter > MISMATCH_LIMIT && !faultActive){
                 faultActive = true;
                 faultType = CORRELATION_FAULT;
                 return lastPosition;
             }
-
             newPos = positionEstimate;
         }
     }
-    else if (pot1Valid)
-    {
+    else if(pot1Valid)
         newPos = pot1;
-    }
     else
-    {
         newPos = pot2Corrected;
-    }
 
     // ---------- RATE CHECK ----------
-    if (abs(newPos - lastPosition) > MAX_RATE)
-    {
-        if (!faultActive)
-        {
+    if(abs(newPos - lastPosition) > MAX_RATE){
+        if(!faultActive){
             faultActive = true;
             faultType = RATE_FAULT;
         }
-
         return lastPosition;
     }
 
     // ---------- STUCK DETECTION ----------
-    if (newPos == lastPosition)
-    {
+    if(newPos == lastPosition){
         stuckCounter++;
-
-        if (stuckCounter > STUCK_LIMIT && !faultActive)
-        {
+        if(stuckCounter > STUCK_LIMIT && !faultActive){
             faultActive = true;
             faultType = STUCK_FAULT;
         }
     }
-    else
-    {
+    else{
         stuckCounter = 0;
     }
 
     // ---------- DEAD BAND FILTER ----------
-    if (abs(newPos - lastPosition) <= DEAD_BAND)
+    if(abs(newPos - lastPosition) <= DEAD_BAND)
         newPos = lastPosition;
 
     lastPosition = newPos;

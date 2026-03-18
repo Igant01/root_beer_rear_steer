@@ -4,6 +4,10 @@ import serial
 import serial.tools.list_ports
 import threading
 import time
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from collections import deque
 
 class RearSteerGUI:
     def __init__(self, root):
@@ -16,10 +20,50 @@ class RearSteerGUI:
         self.connected = False
         self.read_thread = None
         self.running = False
+        self.shutting_down = False  # Flag to prevent callbacks during shutdown
         self.normal_operation_mode = False  # False = USB Control, True = Normal Operation
         self.sweep_running = False  # Track sweep state
         self.write_protection_locked = True  # Track write protection state
         self.motor_enabled = False  # Track motor enabled state
+        
+        # PID Parameters
+        self.torque_kp_var = tk.DoubleVar(value=1.0)
+        self.torque_ki_var = tk.DoubleVar(value=0.1)
+        self.torque_kd_var = tk.DoubleVar(value=0.01)
+        self.velocity_kp_var = tk.DoubleVar(value=0.5)
+        self.velocity_ki_var = tk.DoubleVar(value=0.05)
+        self.velocity_kd_var = tk.DoubleVar(value=0.005)
+        self.position_kp_var = tk.DoubleVar(value=0.3)
+        self.position_ki_var = tk.DoubleVar(value=0.03)
+        self.position_kd_var = tk.DoubleVar(value=0.003)
+        
+        # Plot sample count setting - same number of samples for all loops
+        self.plot_sample_count_var = tk.IntVar(value=200)
+        # Time interval per sample (ms) for each loop
+        self.torque_interval_var = tk.DoubleVar(value=1.0)    # 1ms
+        self.velocity_interval_var = tk.DoubleVar(value=50.0)  # 50ms
+        self.position_interval_var = tk.DoubleVar(value=200.0) # 200ms
+        
+        # Plot data buffers (timestamps in ms from Teensy)
+        self.torque_time_data = deque(maxlen=2000)
+        self.torque_target_data = deque(maxlen=2000)
+        self.torque_actual_data = deque(maxlen=2000)
+        self.velocity_time_data = deque(maxlen=2000)
+        self.velocity_target_data = deque(maxlen=2000)
+        self.velocity_actual_data = deque(maxlen=2000)
+        self.position_time_data = deque(maxlen=2000)
+        self.position_target_data = deque(maxlen=2000)
+        self.position_actual_data = deque(maxlen=2000)
+        
+        # Data collection flags
+        self.collecting_torque_data = False
+        self.collecting_velocity_data = False
+        self.collecting_position_data = False
+        
+        # Plot windows
+        self.torque_plot_window = None
+        self.velocity_plot_window = None
+        self.position_plot_window = None
         
         self.setup_ui()
         self.update_ports()
@@ -160,13 +204,18 @@ class RearSteerGUI:
         self.eeprom_front_right_label = ttk.Label(eeprom_frame, text="--", foreground="darkgreen", font=("Arial", 9, "bold"))
         self.eeprom_front_right_label.grid(row=1, column=3, sticky="w", padx=5)
         
-        # Write Protection Status
-        self.write_protection_label = ttk.Label(eeprom_frame, text="Write Protection: LOCKED", foreground="red", font=("Arial", 10, "bold"))
-        self.write_protection_label.grid(row=2, column=0, columnspan=4, pady=5)
+        ttk.Button(eeprom_frame, text="Refresh EEPROM Values", command=self.view_eeprom).grid(row=2, column=0, columnspan=1, pady=5, padx=5)
+        ttk.Button(eeprom_frame, text="Write to EEPROM", command=self.write_to_eeprom).grid(row=2, column=1, columnspan=1, pady=5, padx=5)
         
-        ttk.Button(eeprom_frame, text="Refresh EEPROM Values", command=self.view_eeprom).grid(row=3, column=0, columnspan=1, pady=5, padx=5)
-        ttk.Button(eeprom_frame, text="Write to EEPROM", command=self.write_to_eeprom).grid(row=3, column=1, columnspan=1, pady=5, padx=5)
-        ttk.Button(eeprom_frame, text="Toggle Write Protection", command=self.toggle_write_protection).grid(row=3, column=2, columnspan=2, pady=5, padx=5)
+        # Write Protection Frame
+        write_prot_frame = ttk.LabelFrame(scrollable_frame, text="EEPROM Write Protection", padding="10")
+        write_prot_frame.pack(fill="x", padx=10, pady=10)
+        
+        prot_status_frame = ttk.Frame(write_prot_frame)
+        prot_status_frame.pack(fill="x", padx=5, pady=5)
+        self.write_protection_label = ttk.Label(prot_status_frame, text="Write Protection: LOCKED", foreground="red", font=("Arial", 10, "bold"))
+        self.write_protection_label.pack(side="left", padx=5)
+        ttk.Button(prot_status_frame, text="Toggle", command=self.toggle_write_protection).pack(side="left", padx=5)
         
         # Operation Mode Frame
         mode_frame = ttk.LabelFrame(scrollable_frame, text="Operation Mode", padding="10")
@@ -234,6 +283,68 @@ class RearSteerGUI:
         self.motor_value_label = ttk.Label(value_frame, text="512", foreground="blue", font=("Arial", 12, "bold"))
         self.motor_value_label.pack(side="left", padx=5)
         
+        # PID Tuning Frame
+        pid_frame = ttk.LabelFrame(scrollable_frame, text="PID Tuning", padding="10")
+        pid_frame.pack(fill="x", padx=10, pady=10)
+        
+        # Torque PID Section
+        torque_frame = ttk.LabelFrame(pid_frame, text="Torque Loop (Kp, Ki, Kd)", padding="5")
+        torque_frame.pack(fill="x", padx=5, pady=5)
+        
+        torque_input_frame = ttk.Frame(torque_frame)
+        torque_input_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Label(torque_input_frame, text="Kp:").pack(side="left", padx=5)
+        ttk.Entry(torque_input_frame, textvariable=self.torque_kp_var, width=10).pack(side="left", padx=2)
+        ttk.Label(torque_input_frame, text="Ki:").pack(side="left", padx=5)
+        ttk.Entry(torque_input_frame, textvariable=self.torque_ki_var, width=10).pack(side="left", padx=2)
+        ttk.Label(torque_input_frame, text="Kd:").pack(side="left", padx=5)
+        ttk.Entry(torque_input_frame, textvariable=self.torque_kd_var, width=10).pack(side="left", padx=2)
+        
+        torque_button_frame = ttk.Frame(torque_frame)
+        torque_button_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Button(torque_button_frame, text="Send", command=self.send_torque_pid).pack(side="left", padx=3)
+        
+        # Velocity PID Section
+        velocity_frame = ttk.LabelFrame(pid_frame, text="Velocity Loop (Kp, Ki, Kd)", padding="5")
+        velocity_frame.pack(fill="x", padx=5, pady=5)
+        
+        velocity_input_frame = ttk.Frame(velocity_frame)
+        velocity_input_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Label(velocity_input_frame, text="Kp:").pack(side="left", padx=5)
+        ttk.Entry(velocity_input_frame, textvariable=self.velocity_kp_var, width=10).pack(side="left", padx=2)
+        ttk.Label(velocity_input_frame, text="Ki:").pack(side="left", padx=5)
+        ttk.Entry(velocity_input_frame, textvariable=self.velocity_ki_var, width=10).pack(side="left", padx=2)
+        ttk.Label(velocity_input_frame, text="Kd:").pack(side="left", padx=5)
+        ttk.Entry(velocity_input_frame, textvariable=self.velocity_kd_var, width=10).pack(side="left", padx=2)
+        
+        velocity_button_frame = ttk.Frame(velocity_frame)
+        velocity_button_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Button(velocity_button_frame, text="Send", command=self.send_velocity_pid).pack(side="left", padx=3)
+        
+        # Position PID Section
+        position_frame = ttk.LabelFrame(pid_frame, text="Position Loop (Kp, Ki, Kd)", padding="5")
+        position_frame.pack(fill="x", padx=5, pady=5)
+        
+        position_input_frame = ttk.Frame(position_frame)
+        position_input_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Label(position_input_frame, text="Kp:").pack(side="left", padx=5)
+        ttk.Entry(position_input_frame, textvariable=self.position_kp_var, width=10).pack(side="left", padx=2)
+        ttk.Label(position_input_frame, text="Ki:").pack(side="left", padx=5)
+        ttk.Entry(position_input_frame, textvariable=self.position_ki_var, width=10).pack(side="left", padx=2)
+        ttk.Label(position_input_frame, text="Kd:").pack(side="left", padx=5)
+        ttk.Entry(position_input_frame, textvariable=self.position_kd_var, width=10).pack(side="left", padx=2)
+        
+        position_button_frame = ttk.Frame(position_frame)
+        position_button_frame.pack(fill="x", padx=5, pady=5)
+        ttk.Button(position_button_frame, text="Send", command=self.send_position_pid).pack(side="left", padx=3)
+        
+        # PID EEPROM Controls
+        pid_eeprom_frame = ttk.Frame(pid_frame)
+        pid_eeprom_frame.pack(fill="x", padx=5, pady=10)
+        ttk.Button(pid_eeprom_frame, text="Write PID to EEPROM", command=self.write_pid_eeprom).pack(side="left", padx=3)
+        ttk.Button(pid_eeprom_frame, text="Read PID from Device", command=self.read_pid_from_device).pack(side="left", padx=3)
+        ttk.Button(pid_eeprom_frame, text="Open Loop Plots", command=self.open_loop_plots).pack(side="left", padx=3)
+        
         # Log Frame
         log_frame = ttk.LabelFrame(scrollable_frame, text="Log", padding="10")
         log_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -288,10 +399,12 @@ class RearSteerGUI:
             
     def disconnect(self):
         """Disconnect from serial port"""
-        self.running = False
+        # Close port first to interrupt any blocking read operations
         if self.ser and self.ser.is_open:
             self.ser.close()
+        # Then set flags to stop the thread
         self.connected = False
+        self.running = False
         self.connect_btn.config(text="Connect")
         self.status_label.config(text="Status: Disconnected", foreground="red")
         self.log("Disconnected")
@@ -301,6 +414,10 @@ class RearSteerGUI:
         request_timer = 0
         while self.running and self.connected:
             try:
+                # Check again to exit quickly if stopped
+                if not self.running or not self.connected:
+                    break
+                    
                 if self.ser and self.ser.in_waiting:
                     response = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     if response:
@@ -394,6 +511,105 @@ class RearSteerGUI:
             self.eeprom_rear_right_label.config(text=parts[3])
             self.eeprom_front_left_label.config(text=parts[5])
             self.eeprom_front_right_label.config(text=parts[6])
+        
+        # PID Parameter Responses
+        elif cmd == 'IC' and len(parts) == 4:
+            # Torque PID: IC,Kp,Ki,Kd
+            self.torque_kp_var.set(float(parts[1]))
+            self.torque_ki_var.set(float(parts[2]))
+            self.torque_kd_var.set(float(parts[3]))
+            self.log("Updated torque PID from device")
+        elif cmd == 'IV' and len(parts) == 4:
+            # Velocity PID: IV,Kp,Ki,Kd
+            self.velocity_kp_var.set(float(parts[1]))
+            self.velocity_ki_var.set(float(parts[2]))
+            self.velocity_kd_var.set(float(parts[3]))
+            self.log("Updated velocity PID from device")
+        elif cmd == 'IP' and len(parts) == 4:
+            # Position PID: IP,Kp,Ki,Kd
+            self.position_kp_var.set(float(parts[1]))
+            self.position_ki_var.set(float(parts[2]))
+            self.position_kd_var.set(float(parts[3]))
+            self.log("Updated position PID from device")
+        elif cmd == 'IAT' and len(parts) == 4:
+            # All torque PID: IAT,Kp,Ki,Kd
+            self.torque_kp_var.set(float(parts[1]))
+            self.torque_ki_var.set(float(parts[2]))
+            self.torque_kd_var.set(float(parts[3]))
+        elif cmd == 'IAV' and len(parts) == 4:
+            # All velocity PID: IAV,Kp,Ki,Kd
+            self.velocity_kp_var.set(float(parts[1]))
+            self.velocity_ki_var.set(float(parts[2]))
+            self.velocity_kd_var.set(float(parts[3]))
+        elif cmd == 'IAP' and len(parts) == 4:
+            # All position PID: IAP,Kp,Ki,Kd
+            self.position_kp_var.set(float(parts[1]))
+            self.position_ki_var.set(float(parts[2]))
+            self.position_kd_var.set(float(parts[3]))
+            self.log("Updated all PID parameters from device")
+        elif cmd == 'HC' and len(parts) == 2:
+            # Torque PID set: HC,OK
+            self.log("Torque PID sent to device")
+        elif cmd == 'HV' and len(parts) == 2:
+            # Velocity PID set: HV,OK
+            self.log("Velocity PID sent to device")
+        elif cmd == 'HP' and len(parts) == 2:
+            # Position PID set: HP,OK
+            self.log("Position PID sent to device")
+        elif cmd == 'XPID':
+            # PID EEPROM write: XPID,OK or XPID,LOCKED
+            if len(parts) >= 2:
+                if parts[1] == 'OK':
+                    self.log("PID parameters saved to EEPROM")
+                else:
+                    self.log(f"PID write failed: {parts[1]}")
+        elif cmd == 'UC' and len(parts) == 2:
+            # Torque data streaming toggle: UC,ON or UC,OFF
+            status = parts[1]
+            self.log(f"Torque data streaming: {status}")
+        elif cmd == 'UV' and len(parts) == 2:
+            # Velocity data streaming toggle: UV,ON or UV,OFF
+            status = parts[1]
+            self.log(f"Velocity data streaming: {status}")
+        elif cmd == 'UP' and len(parts) == 2:
+            # Position data streaming toggle: UP,ON or UP,OFF
+            status = parts[1]
+            self.log(f"Position data streaming: {status}")
+        
+        # Plot data streaming: TC,target,actual,timestamp (torque), VC,target,actual,timestamp (velocity), LP,target,actual,timestamp (position)
+        elif cmd == 'TC' and len(parts) == 4:
+            # Torque loop data: TC,target,actual,timestamp
+            try:
+                target = float(parts[1])
+                actual = float(parts[2])
+                timestamp = float(parts[3])
+                self.torque_target_data.append(target)
+                self.torque_actual_data.append(actual)
+                self.torque_time_data.append(timestamp)
+            except (ValueError, IndexError):
+                pass
+        elif cmd == 'VC' and len(parts) == 4:
+            # Velocity loop data: VC,target,actual,timestamp
+            try:
+                target = float(parts[1])
+                actual = float(parts[2])
+                timestamp = float(parts[3])
+                self.velocity_target_data.append(target)
+                self.velocity_actual_data.append(actual)
+                self.velocity_time_data.append(timestamp)
+            except (ValueError, IndexError):
+                pass
+        elif cmd == 'LP' and len(parts) == 4:
+            # Position loop data: LP,target,actual,timestamp
+            try:
+                target = float(parts[1])
+                actual = float(parts[2])
+                timestamp = float(parts[3])
+                self.position_target_data.append(target)
+                self.position_actual_data.append(actual)
+                self.position_time_data.append(timestamp)
+            except (ValueError, IndexError):
+                pass
             
     def send_command(self, cmd):
         """Send command to serial port"""
@@ -528,13 +744,252 @@ class RearSteerGUI:
             messagebox.showerror("Error", "Not connected")
             return
         self.send_command("VE")
+    
+    # PID Tuning Methods
+    def send_torque_pid(self):
+        """Send torque PID parameters to device"""
+        if not self.connected:
+            messagebox.showerror("Error", "Not connected")
+            return
+        kp = self.torque_kp_var.get()
+        ki = self.torque_ki_var.get()
+        kd = self.torque_kd_var.get()
+        cmd = f"HC{kp},{ki},{kd}"
+        self.send_command(cmd)
+    
+    def send_velocity_pid(self):
+        """Send velocity PID parameters to device"""
+        if not self.connected:
+            messagebox.showerror("Error", "Not connected")
+            return
+        kp = self.velocity_kp_var.get()
+        ki = self.velocity_ki_var.get()
+        kd = self.velocity_kd_var.get()
+        cmd = f"HV{kp},{ki},{kd}"
+        self.send_command(cmd)
+    
+    def send_position_pid(self):
+        """Send position PID parameters to device"""
+        if not self.connected:
+            messagebox.showerror("Error", "Not connected")
+            return
+        kp = self.position_kp_var.get()
+        ki = self.position_ki_var.get()
+        kd = self.position_kd_var.get()
+        cmd = f"HP{kp},{ki},{kd}"
+        self.send_command(cmd)
+    
+    def read_pid_from_device(self):
+        """Read current PID parameters from device"""
+        if not self.connected:
+            messagebox.showerror("Error", "Not connected")
+            return
+        self.send_command("IA")
+    
+    def write_pid_eeprom(self):
+        """Write PID parameters to EEPROM"""
+        if not self.connected:
+            messagebox.showerror("Error", "Not connected")
+            return
+        
+        if self.write_protection_locked:
+            messagebox.showerror("Error", "Write protection is LOCKED. Toggle it to write.")
+            return
+        
+        self.send_command("XPID")
+        self.log("PID EEPROM write requested")
+    
+    # Plotting Methods
+    def open_loop_plots(self):
+        """Open a single window with all three loop plots stacked vertically"""
+        if not self.connected:
+            messagebox.showerror("Error", "Not connected")
+            return
+        
+        # Check if any are already collecting
+        if self.collecting_torque_data or self.collecting_velocity_data or self.collecting_position_data:
+            messagebox.showinfo("Info", "Plots are already open")
+            return
+        
+        # Start data collection for all three loops
+        self.collecting_torque_data = True
+        self.collecting_velocity_data = True
+        self.collecting_position_data = True
+        # Clear old data buffers
+        self.torque_time_data.clear()
+        self.torque_target_data.clear()
+        self.torque_actual_data.clear()
+        self.velocity_time_data.clear()
+        self.velocity_target_data.clear()
+        self.velocity_actual_data.clear()
+        self.position_time_data.clear()
+        self.position_target_data.clear()
+        self.position_actual_data.clear()
+        self.send_command("UC")
+        self.send_command("UV")
+        self.send_command("UP")
+        
+        # Create new window
+        plot_window = tk.Toplevel(self.root)
+        plot_window.title("Control Loop Analysis")
+        plot_window.geometry("900x950")
+        
+        # Create control frame at top for plot settings
+        control_frame = ttk.LabelFrame(plot_window, text="Plot Settings", padding="10")
+        control_frame.pack(fill="x", padx=10, pady=10)
+        
+        # Row 1: Sample count
+        row1 = ttk.Frame(control_frame)
+        row1.pack(fill="x", padx=5, pady=2)
+        tk.Label(row1, text="Samples:", font=("TkDefaultFont", 10, "bold")).pack(side="left", padx=10)
+        ttk.Entry(row1, textvariable=self.plot_sample_count_var, width=8).pack(side="left", padx=2)
+        
+        # Row 2: Time intervals
+        row2 = ttk.Frame(control_frame)
+        row2.pack(fill="x", padx=5, pady=2)
+        tk.Label(row2, text="Intervals (ms):", font=("TkDefaultFont", 10, "bold")).pack(side="left", padx=10)
+        tk.Label(row2, text="Torque:", font=("TkDefaultFont", 9)).pack(side="left", padx=(10,2))
+        ttk.Entry(row2, textvariable=self.torque_interval_var, width=6).pack(side="left", padx=2)
+        tk.Label(row2, text="Velocity:", font=("TkDefaultFont", 9)).pack(side="left", padx=(10,2))
+        ttk.Entry(row2, textvariable=self.velocity_interval_var, width=6).pack(side="left", padx=2)
+        tk.Label(row2, text="Position:", font=("TkDefaultFont", 9)).pack(side="left", padx=(10,2))
+        ttk.Entry(row2, textvariable=self.position_interval_var, width=6).pack(side="left", padx=2)
+        
+        # Create matplotlib figure with 3 subplots stacked vertically
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 10), dpi=100)
+        # Add bottom margin and increased vertical spacing to prevent time labels from overlapping
+        fig.subplots_adjust(bottom=0.1, hspace=0.55)
+        
+        # TkAgg canvas
+        canvas = FigureCanvasTkAgg(fig, master=plot_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # Animation function
+        def update_plots(frame):
+            # Get sample count (with bounds checking)
+            try:
+                num_samples = max(10, self.plot_sample_count_var.get())
+            except (tk.TclError, ValueError):
+                num_samples = 200
+            
+            # Get time intervals (ms)
+            try:
+                torque_dt = max(0.001, self.torque_interval_var.get())
+                velocity_dt = max(0.001, self.velocity_interval_var.get())
+                position_dt = max(0.001, self.position_interval_var.get())
+            except (tk.TclError, ValueError):
+                torque_dt, velocity_dt, position_dt = 1.0, 2.0, 5.0
+            
+            def get_last_n(time_data, target_data, actual_data, n):
+                """Get the last N samples from each buffer"""
+                t_list = list(time_data)
+                tar_list = list(target_data)
+                act_list = list(actual_data)
+                return t_list[-n:], tar_list[-n:], act_list[-n:]
+            
+            # Torque loop (timestamps in ms)
+            ax1.clear()
+            ax1.set_axisbelow(True)
+            ax1.grid(True, alpha=0.6, linestyle='-', linewidth=0.7, color='gray')
+            ax1.set_xlabel("Time (ms)", fontsize=11, fontweight='bold')
+            ax1.set_ylabel("Torque Response", fontsize=11, fontweight='bold')
+            ax1.set_title(f"Torque Control Loop @ {torque_dt}ms ({num_samples} samples = {num_samples*torque_dt:.0f}ms)", fontsize=12, fontweight='bold', pad=10)
+            ax1.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+            
+            torque_t, torque_tar, torque_act = get_last_n(
+                self.torque_time_data, self.torque_target_data, self.torque_actual_data, num_samples)
+            
+            if len(torque_t) > 0:
+                ax1.plot(torque_t, torque_tar, 
+                        label="Target", linestyle='--', color='blue', linewidth=2.5)
+                ax1.plot(torque_t, torque_act, 
+                        label="Actual", color='red', linewidth=2.5)
+                ax1.legend(loc='upper right', fontsize=9)
+                ax1.autoscale(enable=True, axis='y')
+            else:
+                ax1.set_xlim(0, 1)
+                ax1.set_ylim(0, 1)
+            
+            # Velocity loop (timestamps in ms)
+            ax2.clear()
+            ax2.set_axisbelow(True)
+            ax2.grid(True, alpha=0.6, linestyle='-', linewidth=0.7, color='gray')
+            ax2.set_xlabel("Time (ms)", fontsize=11, fontweight='bold')
+            ax2.set_ylabel("Velocity Response", fontsize=11, fontweight='bold')
+            ax2.set_title(f"Velocity Control Loop @ {velocity_dt}ms ({num_samples} samples = {num_samples*velocity_dt:.0f}ms)", fontsize=12, fontweight='bold', pad=10)
+            ax2.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+            
+            velocity_t, velocity_tar, velocity_act = get_last_n(
+                self.velocity_time_data, self.velocity_target_data, self.velocity_actual_data, num_samples)
+            
+            if len(velocity_t) > 0:
+                ax2.plot(velocity_t, velocity_tar, 
+                        label="Target", linestyle='--', color='blue', linewidth=2.5)
+                ax2.plot(velocity_t, velocity_act, 
+                        label="Actual", color='green', linewidth=2.5)
+                ax2.legend(loc='upper right', fontsize=9)
+                ax2.autoscale(enable=True, axis='y')
+            else:
+                ax2.set_xlim(0, 1)
+                ax2.set_ylim(0, 1)
+            
+            # Position loop (timestamps in ms)
+            ax3.clear()
+            ax3.set_axisbelow(True)
+            ax3.grid(True, alpha=0.6, linestyle='-', linewidth=0.7, color='gray')
+            ax3.set_xlabel("Time (ms)", fontsize=11, fontweight='bold')
+            ax3.set_ylabel("Position Response", fontsize=11, fontweight='bold')
+            ax3.set_title(f"Position Control Loop @ {position_dt}ms ({num_samples} samples = {num_samples*position_dt:.0f}ms)", fontsize=12, fontweight='bold', pad=10)
+            ax3.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+            
+            position_t, position_tar, position_act = get_last_n(
+                self.position_time_data, self.position_target_data, self.position_actual_data, num_samples)
+            
+            if len(position_t) > 0:
+                ax3.plot(position_t, position_tar, 
+                        label="Target", linestyle='--', color='blue', linewidth=2.5)
+                ax3.plot(position_t, position_act, 
+                        label="Actual", color='purple', linewidth=2.5)
+                ax3.legend(loc='upper right', fontsize=9)
+                ax3.autoscale(enable=True, axis='y')
+            else:
+                ax3.set_xlim(0, 1)
+                ax3.set_ylim(0, 1)
+            
+            canvas.draw()
+        
+        # Start animation
+        ani = FuncAnimation(fig, update_plots, interval=100, cache_frame_data=False)
+        # Store animation on the window to prevent garbage collection
+        plot_window.ani = ani
+        
+        # Handle window close
+        def on_close():
+            self.collecting_torque_data = False
+            self.collecting_velocity_data = False
+            self.collecting_position_data = False
+            # Send stop-all command (single command, no toggle ambiguity)
+            self.send_command("US")
+            plot_window.destroy()
+        
+        plot_window.protocol("WM_DELETE_WINDOW", on_close)
         
     def log(self, message):
-        """Add message to log"""
-        self.log_text.config(state="normal")
-        self.log_text.insert("end", message + "\n")
-        self.log_text.see("end")
-        self.log_text.config(state="disabled")
+        """Add message to log (thread-safe)"""
+        if self.shutting_down:
+            return  # Don't try to log during shutdown
+        try:
+            if self.root.winfo_exists():
+                def add_log():
+                    if self.log_text.winfo_exists():
+                        self.log_text.config(state="normal")
+                        self.log_text.insert("end", message + "\n")
+                        self.log_text.see("end")
+                        self.log_text.config(state="disabled")
+                self.root.after(0, add_log)
+        except Exception:
+            pass  # Silently fail if widget no longer exists
         
     def clear_log(self):
         """Clear log"""
@@ -544,9 +999,17 @@ class RearSteerGUI:
         
     def on_closing(self):
         """Handle window closing"""
+        self.shutting_down = True  # Prevent new callbacks from being scheduled
+        # Close any open plot windows
+        plt.close('all')
         if self.connected:
             self.disconnect()
+        # Wait for read thread to finish (with timeout)
+        if self.read_thread and self.read_thread.is_alive():
+            self.read_thread.join(timeout=1.0)
         self.root.destroy()
+        import sys
+        sys.exit(0)
 
 if __name__ == "__main__":
     root = tk.Tk()
